@@ -1,0 +1,202 @@
+To add user authentication and linking expenses to the user, we need to extend the application to support user registration, login, and session management. Here’s a basic plan for adding authentication and then test cases for the updated functionality.
+
+### Step 1: Extend the app to support authentication
+
+First, we need to add a `User` model, setup routes for registration and login, and modify the expense logging and category creation routes to require authentication.
+
+```python
+# Import necessary modules
+from flask import Flask, request, jsonify, session, redirect, url_for
+from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
+from datetime import datetime
+from werkzeug.security import generate_password_hash, check_password_hash
+
+# Initialize Flask app and SQLAlchemy
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///expenses.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECRET_KEY'] = 'your_secret_key_here'
+db = SQLAlchemy(app)
+migrate = Migrate(app, db)
+
+# User Model
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(128), nullable=False)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+# Expense and Category Models remain the same
+
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    if User.query.filter_by(username=data['username']).first():
+        return jsonify({"error": "User already exists"}), 400
+    new_user = User(username=data['username'])
+    new_user.set_password(data['password'])
+    db.session.add(new_user)
+    db.session.commit()
+    return jsonify({"message": "User registered successfully"}), 201
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    user = User.query.filter_by(username=data['username']).first()
+    if user is None or not user.check_password(data['password']):
+        return jsonify({"error": "Invalid username or password"}), 401
+    session['user_id'] = user.id
+    return jsonify({"message": "Logged in successfully"}), 200
+
+@app.route('/expenses', methods=['POST'])
+def log_expense():
+    # Check if user is authenticated
+    if 'user_id' not in session:
+        return jsonify({"error": "Authentication required"}), 401
+    data = request.get_json()
+    expense = Expense(
+        amount=data['amount'],
+        description=data['description'],
+        category_id=data['category_id'],
+        user_id=session['user_id']  # Add user_id to the expense
+    )
+    db.session.add(expense)
+    db.session.commit()
+    return jsonify(expense.id), 201
+
+# ... (other routes remain the same with similar authentication checks)
+```
+
+### Step 2: Write Test Cases
+
+Below are the test cases for the updated application, including positive, negative, and edge cases.
+
+#### Test Case 1: User Registration
+
+- **Steps:**
+  1. Send a POST request to `/register` with a new user's data.
+- **Expected Result:**
+  - A new user is created in the database.
+  - Status code 201 and a success message in the response.
+
+#### Test Case 2: User Login
+
+- **Steps:**
+  1. Send a POST request to `/login` with a registered user's credentials.
+- **Expected Result:**
+  - A session is created for the user.
+  - Status code 200 and a success message in the response.
+
+#### Test Case 3: Logging an Expense
+
+- **Steps:**
+  1. Login a user to get a session.
+  2. Send a POST request to `/expenses` with the session token.
+- **Expected Result:**
+  - An expense is logged with the user's ID.
+  - Status code 201 and the expense's ID in the response.
+
+#### Test Case 4: Logging an Expense Without Authentication
+
+- **Steps:**
+  1. Send a POST request to `/expenses` without a session token.
+- **Expected Result:**
+  - The request is rejected.
+  - Status code 401 and an error message in the response.
+
+#### Test Case 5: Adding a Category
+
+- **Steps:**
+  1. Login a user to get a session.
+  2. Send a POST request to `/categories` with the session token.
+- **Expected Result:**
+  - A category is added to the database.
+  - Status code 201 and the category's ID in the response.
+
+#### Test Case 6: Duplicate User Registration
+
+- **Steps:**
+  1. Register a new user.
+  2. Try to register the same user again.
+- **Expected Result:**
+  - The second registration fails.
+  - Status code 400 and an error message in the response.
+
+#### Test Case 7: Incorrect Login Credentials
+
+- **Steps:**
+  1. Send a POST request to `/login` with incorrect credentials.
+- **Expected Result:**
+  - The login request is rejected.
+  - Status code 401 and an error message in the response.
+
+#### Test Case 8: Invalid JSON Data for Expense Logging
+
+- **Steps:**
+  1. Login a user to get a session.
+  2. Send a POST request to `/expenses` with invalid JSON data (missing required fields).
+- **Expected Result:**
+  - The request is rejected.
+  - Status code 400 and an error message in the response.
+
+#### Test Case 9: Weekly Summary
+
+- **Steps:**
+  1. Login a user.
+  2. Log several expenses for the user within the last week.
+  3. Send a GET request to `/summarize/weekly`.
+- **Expected Result:**
+  - A summary of the user's expenses by category is returned.
+  - Status code 200 and the summary data in the response.
+
+### Step 3: Implementing Test Cases
+
+For each test case, you can use a testing framework like PyTest along with Flask's testing client. Here's an example of how you might write these tests.
+
+```python
+import pytest
+from app import app, db, User, Expense, Category
+from flask import json
+from datetime import datetime
+
+@pytest.fixture
+def client():
+    app.config['TESTING'] = True
+    client = app.test_client()
+
+    with app.app_context():
+        db.create_all()
+        yield client
+        db.drop_all()
+
+def test_register_user(client):
+    response = client.post('/register', json={'username': 'testuser', 'password': 'testpassword'})
+    assert response.status_code == 201
+    assert b'User registered successfully' in response.data
+
+def test_login_user(client):
+    client.post('/register', json={'username': 'testuser', 'password': 'testpassword'})
+    response = client.post('/login', json={'username': 'testuser', 'password': 'testpassword'})
+    assert response.status_code == 200
+    assert b'Logged in successfully' in response.data
+
+def test_log_expense(client):
+    client.post('/register', json={'username': 'testuser', 'password': 'testpassword'})
+    client.post('/login', json={'username': 'testuser', 'password': 'testpassword'})
+    response = client.post('/expenses', json={'amount': 100, 'description': 'Test Expense', 'category_id': 1})
+    assert response.status_code == 201
+    assert b'1' in response.data  # Assuming the first expense gets ID 1
+
+def test_log_expense_unauthorized(client):
+    response = client.post('/expenses', json={'amount': 100, 'description': 'Test Expense', 'category_id': 1})
+    assert response.status_code == 401
+    assert b'Authentication required' in response.data
+```
+
+These test cases cover the core functionalities of user registration, login, expense logging, and handling unauthorized requests. You can expand on these tests to cover more edge cases and additional functionalities as needed.
